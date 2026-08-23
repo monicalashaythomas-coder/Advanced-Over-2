@@ -297,7 +297,7 @@ class DerivClient:
                 "currency": currency,
                 "duration": duration_ticks,
                 "duration_unit": "t",
-                "symbol": symbol,
+                "underlying_symbol": symbol,
                 "barrier": str(barrier),
             }
         )
