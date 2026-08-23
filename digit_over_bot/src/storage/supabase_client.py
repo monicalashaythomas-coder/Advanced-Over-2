@@ -46,6 +46,34 @@ class SupabaseStore:
         except Exception:
             logger.exception("Supabase insert into %s raised", table)
 
+    async def select(self, table: str, match: dict[str, Any]) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        try:
+            client = await self._get_client()
+            params = {k: f"eq.{v}" for k, v in match.items()}
+            resp = await client.get(f"{self._base}/{table}", headers=self._headers, params=params)
+            if resp.status_code >= 300:
+                logger.warning("Supabase select on %s failed: %s %s", table, resp.status_code, resp.text)
+                return []
+            return resp.json()
+        except Exception:
+            logger.exception("Supabase select on %s raised", table)
+            return []
+
+    async def upsert(self, table: str, row: dict[str, Any], on_conflict: str) -> None:
+        if not self.enabled:
+            return
+        try:
+            client = await self._get_client()
+            headers = {**self._headers, "Prefer": "resolution=merge-duplicates"}
+            params = {"on_conflict": on_conflict}
+            resp = await client.post(f"{self._base}/{table}", headers=headers, params=params, json=row)
+            if resp.status_code >= 300:
+                logger.warning("Supabase upsert into %s failed: %s %s", table, resp.status_code, resp.text)
+        except Exception:
+            logger.exception("Supabase upsert into %s raised", table)
+
     async def update(self, table: str, match: dict[str, Any], patch: dict[str, Any]) -> None:
         if not self.enabled:
             return
