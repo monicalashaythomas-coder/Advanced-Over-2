@@ -19,6 +19,7 @@ from src.storage.supabase_client import SupabaseStore
 logger = logging.getLogger("bot")
 
 LOG_EVERY_N_EVALUATIONS = 20  # sample non-trade evaluations to Supabase to bound write volume
+MARKOV_SAVE_INTERVAL_S = 60  # how often cumulative markov counts get flushed to Supabase
 
 
 def last_digit(quote: float | str) -> int:
@@ -84,7 +85,11 @@ class DigitOverBot:
             self.pending[symbol] = None
             self._eval_counter[symbol] = 0
 
+        self._markov_save_task: asyncio.Task | None = None
+
     async def start(self) -> None:
+        for symbol in self.settings.trading.symbols:
+            await self._load_markov_state(symbol)
         await self.client.connect()
         if self.client.initial_balance:
             self.risk.state.starting_balance = self.client.initial_balance
@@ -93,6 +98,34 @@ class DigitOverBot:
         for symbol in self.settings.trading.symbols:
             await self.client.subscribe_ticks(symbol, self._tick_handler(symbol))
         logger.info("subscribed to: %s", ", ".join(self.settings.trading.symbols))
+
+    async def _load_markov_state(self, symbol: str) -> None:
+        """Restore cumulative markov_order_2/3 counts from Supabase so they
+        don't start from zero on every restart -- without this, those orders
+        can take tens of thousands of ticks per symbol to warm back up."""
+        rows = await self.store.select("digit_markov_state", {"symbol": symbol})
+        if not rows:
+            return
+        state = {row["order_"]: row["counts"] for row in rows}
+        self.markov_layers[symbol].import_state(state)
+        logger.info("%s: restored markov state for orders %s", symbol, sorted(state.keys()))
+
+    async def _save_markov_state(self, symbol: str) -> None:
+        state = self.markov_layers[symbol].export_state()
+        for order, counts in state.items():
+            if not counts:
+                continue
+            await self.store.upsert(
+                "digit_markov_state",
+                {"symbol": symbol, "order_": order, "counts": counts},
+                on_conflict="symbol,order_",
+            )
+
+    async def _markov_save_loop(self) -> None:
+        while True:
+            await asyncio.sleep(MARKOV_SAVE_INTERVAL_S)
+            for symbol in self.settings.trading.symbols:
+                await self._save_markov_state(symbol)
 
     def _tick_handler(self, symbol: str):
         async def handler(tick: dict[str, Any]) -> None:
@@ -247,9 +280,14 @@ class DigitOverBot:
 
     async def run_forever(self) -> None:
         await self.start()
+        self._markov_save_task = asyncio.create_task(self._markov_save_loop())
         try:
             while True:
                 await asyncio.sleep(3600)
         finally:
+            if self._markov_save_task is not None:
+                self._markov_save_task.cancel()
+            for symbol in self.settings.trading.symbols:
+                await self._save_markov_state(symbol)
             await self.client.close()
             await self.store.close()

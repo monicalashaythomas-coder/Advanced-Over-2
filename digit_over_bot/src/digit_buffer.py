@@ -74,3 +74,15 @@ class DecayedMarkovCounts:
     def state_count(self, history: tuple[int, ...]) -> float:
         row = self.counts.get(history)
         return sum(row) if row else 0.0
+
+    def to_dict(self) -> dict[str, list[float]]:
+        """Serialize for persistence -- history tuple -> comma-joined string key."""
+        return {",".join(map(str, hist)): list(row) for hist, row in self.counts.items()}
+
+    def load_dict(self, data: dict[str, list[float]]) -> None:
+        """Restore from a previously-persisted to_dict() payload. Merges into
+        (does not replace) whatever counts already exist."""
+        for key, row in data.items():
+            hist = tuple(int(x) for x in key.split(",")) if key else ()
+            if len(hist) == self.order:
+                self.counts[hist] = list(row)
