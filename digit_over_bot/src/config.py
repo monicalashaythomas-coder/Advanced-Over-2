@@ -1,0 +1,99 @@
+"""
+Central configuration for the digit-over bot.
+
+Everything here is env-driven so the same image runs on Railway (or anywhere
+else) with no code changes -- only environment variables differ between a
+demo-account deployment and a real-account one. There is deliberately no
+"live" vs "demo" switch in code: that distinction is entirely a property of
+which API token you hand it (Deriv demo tokens only ever touch a demo
+account). Start with a demo token.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+
+
+def _env_list(name: str, default: str) -> list[str]:
+    raw = os.getenv(name, default)
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def _env_float(name: str, default: float) -> float:
+    return float(os.getenv(name, str(default)))
+
+
+def _env_int(name: str, default: int) -> int:
+    return int(os.getenv(name, str(default)))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class DerivConfig:
+    app_id: str = field(default_factory=lambda: os.getenv("DERIV_APP_ID", ""))
+    api_token: str = field(default_factory=lambda: os.getenv("DERIV_API_TOKEN", ""))
+    endpoint: str = field(
+        default_factory=lambda: os.getenv("DERIV_WS_ENDPOINT", "wss://ws.derivws.com/websockets/v3")
+    )
+
+
+@dataclass(frozen=True)
+class SupabaseConfig:
+    url: str = field(default_factory=lambda: os.getenv("SUPABASE_URL", ""))
+    service_key: str = field(default_factory=lambda: os.getenv("SUPABASE_SERVICE_KEY", ""))
+    enabled: bool = field(default_factory=lambda: _env_bool("SUPABASE_ENABLED", True))
+
+
+@dataclass(frozen=True)
+class TradingConfig:
+    symbols: list[str] = field(
+        default_factory=lambda: _env_list("SYMBOLS", "R_10,R_25,R_50,R_75,R_100")
+    )
+    barrier: int = field(default_factory=lambda: _env_int("BARRIER", 2))  # "Digit Over 2"
+    stake: float = field(default_factory=lambda: _env_float("STAKE", 1.0))
+    currency: str = field(default_factory=lambda: os.getenv("CURRENCY", "USD"))
+    duration_ticks: int = field(default_factory=lambda: _env_int("DURATION_TICKS", 1))
+    max_price_slippage_pct: float = field(default_factory=lambda: _env_float("MAX_PRICE_SLIPPAGE_PCT", 5.0))
+
+    # Rolling window sizes used by the structure-detection layer.
+    window_sizes: list[int] = field(default_factory=lambda: [100, 250, 500, 1000])
+    buffer_size: int = field(default_factory=lambda: _env_int("BUFFER_SIZE", 1000))
+    markov_orders: list[int] = field(default_factory=lambda: [1, 2, 3])
+
+    # Statistical gating. See src/ensemble.py for how these combine.
+    alpha: float = field(default_factory=lambda: _env_float("ALPHA", 0.01))
+    min_edge: float = field(default_factory=lambda: _env_float("MIN_EDGE", 0.03))
+    min_edge_sigma_multiple: float = field(default_factory=lambda: _env_float("MIN_EDGE_SIGMA_MULTIPLE", 2.0))
+    min_models_agreeing: int = field(default_factory=lambda: _env_int("MIN_MODELS_AGREEING", 4))
+    min_markov_state_count: int = field(default_factory=lambda: _env_int("MIN_MARKOV_STATE_COUNT", 30))
+
+    # Risk / circuit breakers.
+    max_daily_loss_pct: float = field(default_factory=lambda: _env_float("MAX_DAILY_LOSS_PCT", 10.0))
+    max_consecutive_losses: int = field(default_factory=lambda: _env_int("MAX_CONSECUTIVE_LOSSES", 6))
+    max_concurrent_open: int = field(default_factory=lambda: _env_int("MAX_CONCURRENT_OPEN", 1))
+    cooldown_after_trade_s: float = field(default_factory=lambda: _env_float("COOLDOWN_AFTER_TRADE_S", 0.0))
+
+    # Online relearning.
+    weight_learning_rate: float = field(default_factory=lambda: _env_float("WEIGHT_LEARNING_RATE", 0.1))
+    calibration_window: int = field(default_factory=lambda: _env_int("CALIBRATION_WINDOW", 200))
+    calibration_pause_threshold: float = field(
+        default_factory=lambda: _env_float("CALIBRATION_PAUSE_THRESHOLD", 0.08)
+    )
+
+
+@dataclass(frozen=True)
+class Settings:
+    deriv: DerivConfig = field(default_factory=DerivConfig)
+    supabase: SupabaseConfig = field(default_factory=SupabaseConfig)
+    trading: TradingConfig = field(default_factory=TradingConfig)
+    log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
+    dry_run: bool = field(default_factory=lambda: _env_bool("DRY_RUN", False))
+
+
+SETTINGS = Settings()
