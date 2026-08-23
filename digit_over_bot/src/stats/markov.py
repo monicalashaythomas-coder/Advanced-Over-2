@@ -92,3 +92,16 @@ class MarkovLayer:
         row = self.base.get(()) or [0.0] * 10
         cnt = sum(row)
         return MarkovEstimate(order=0, state_count=cnt, probs=self._smoothed(row, alpha_smooth))
+
+    def export_state(self) -> dict[int, dict[str, list[float]]]:
+        """Serialize the cumulative decayed counts for every order, for
+        persistence across restarts -- this is what lets order 2/3 warm up
+        instead of resetting to zero every deploy."""
+        return {o: model.to_dict() for o, model in self.models.items()}
+
+    def import_state(self, state: dict[int, dict[str, list[float]]]) -> None:
+        """Restore cumulative counts previously produced by export_state()."""
+        for o, data in state.items():
+            o = int(o)
+            if o in self.models:
+                self.models[o].load_dict(data)
