@@ -222,3 +222,47 @@ class Ensemble:
             zscore=zscore,
             markov_per_order=markov_orders,
         )
+
+
+def _fmt_vote(v: ModelVote) -> str:
+    """One model's reading, e.g. 'markov_order_2=+0.0231*(se=0.0089,w=0.94)'.
+
+    Trailing '*' marks the model's own significance test as passed.
+    """
+    if not v.available:
+        return f"{v.name}=n/a"
+    sig = "*" if v.significant else " "
+    return f"{v.name}={v.edge:+.4f}{sig}(se={v.se:.4f},w={v.weight:.2f})"
+
+
+def _fmt_chi2(chi2: ChiSquareResult | None) -> str:
+    if chi2 is None:
+        return "chi2=n/a"
+    sig = "*" if chi2.significant else " "
+    direction = "over" if chi2.over_direction_score > 0 else "under"
+    return f"chi2=p{chi2.p_value:.3f}{sig}({direction})"
+
+
+def describe(result: EnsembleResult) -> str:
+    """
+    Render one evaluation as a single log line: what every model is
+    saying (edge, standard error, its own significance, learned weight),
+    the chi-square gate's directional read, the combined estimate, the
+    agreement count, and the trade/skip verdict with its reason.
+    """
+    votes_str = " ".join(_fmt_vote(v) for v in result.votes)
+    chi2_str = _fmt_chi2(result.chi2)
+    if result.combined_edge is not None and result.combined_se is not None:
+        se = result.combined_se
+        combined_str = (
+            f"combined={result.combined_edge:+.4f}"
+            f"(se={se:.4f}, {result.combined_edge / se if se else 0.0:+.1f}SE)"
+        )
+    else:
+        combined_str = "combined=n/a"
+    verdict = "TRADE" if result.should_trade else "skip"
+    reason = result.reasons[-1] if result.reasons else ""
+    return (
+        f"{result.symbol} n={result.n} | {votes_str} {chi2_str} | {combined_str} "
+        f"| agree={result.agreement_count}/{result.votes_available} | {verdict}: {reason}"
+    )

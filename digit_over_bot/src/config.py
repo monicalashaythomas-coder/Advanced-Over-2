@@ -94,6 +94,12 @@ class Settings:
     trading: TradingConfig = field(default_factory=TradingConfig)
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
     dry_run: bool = field(default_factory=lambda: _env_bool("DRY_RUN", False))
+    # Log every model's edge/se/significance/weight plus the agreement
+    # verdict on every single tick evaluation (not just when a trade fires
+    # or on the sampled Supabase cadence). Off this, only trade fires and
+    # the periodic sampled line still log. On by default since it's the
+    # main way to see what the layers are doing live.
+    log_every_evaluation: bool = field(default_factory=lambda: _env_bool("LOG_EVERY_EVALUATION", True))
 
 
 SETTINGS = Settings()

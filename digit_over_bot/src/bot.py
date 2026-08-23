@@ -8,9 +8,10 @@ from typing import Any
 from src.config import Settings
 from src.deriv_client import DerivClient
 from src.digit_buffer import RollingDigitBuffer
-from src.ensemble import Ensemble, EnsembleResult
-from src.executor import Executor
+from src.ensemble import Ensemble, EnsembleResult, describe
+from src.executor import Executor, TradeAttempt
 from src.learner import Learner
+from src.pnl_ledger import PnLLedger
 from src.risk import RiskManager
 from src.stats.markov import MarkovLayer
 from src.storage.supabase_client import SupabaseStore
@@ -62,6 +63,8 @@ class DigitOverBot:
             min_markov_state_count=t.min_markov_state_count,
         )
 
+        self.pnl = PnLLedger(starting_balance=100.0)  # overwritten once connect() reports the real balance
+
         self.buffers: dict[str, RollingDigitBuffer] = {}
         self.markov_layers: dict[str, MarkovLayer] = {}
         self.learners: dict[str, Learner] = {}
@@ -83,6 +86,10 @@ class DigitOverBot:
 
     async def start(self) -> None:
         await self.client.connect()
+        if self.client.initial_balance:
+            self.risk.state.starting_balance = self.client.initial_balance
+            self.risk.state.balance = self.client.initial_balance
+            self.pnl.starting_balance = self.client.initial_balance
         for symbol in self.settings.trading.symbols:
             await self.client.subscribe_ticks(symbol, self._tick_handler(symbol))
         logger.info("subscribed to: %s", ", ".join(self.settings.trading.symbols))
@@ -128,6 +135,12 @@ class DigitOverBot:
         if result.should_trade or self._eval_counter[symbol] % LOG_EVERY_N_EVALUATIONS == 0:
             asyncio.create_task(self._log_evaluation(symbol, result))
 
+        # Console visibility into what every layer/model is saying and
+        # whether they agree, on every tick by default (LOG_EVERY_EVALUATION).
+        # Trade fires always log regardless of that setting.
+        if self.settings.log_every_evaluation or result.should_trade:
+            logger.info(describe(result))
+
         per_model_p_over: dict[str, float | None] = {}
         for v in result.votes:
             per_model_p_over[v.name] = (result.p_fair + v.edge) if (v.available and v.edge is not None) else None
@@ -171,9 +184,11 @@ class DigitOverBot:
                 "opened_epoch": tick.get("epoch"),
             },
         )
-        await self.client.subscribe_contract(attempt.contract_id, self._settlement_handler(symbol, attempt.contract_id))
+        await self.client.subscribe_contract(attempt.contract_id, self._settlement_handler(symbol, attempt))
 
-    def _settlement_handler(self, symbol: str, contract_id: int):
+    def _settlement_handler(self, symbol: str, attempt: TradeAttempt):
+        contract_id = attempt.contract_id
+
         async def handler(poc: dict[str, Any]) -> None:
             if not poc.get("is_sold"):
                 return
@@ -189,7 +204,19 @@ class DigitOverBot:
                     "closed_epoch": poc.get("date_expiry") or poc.get("sell_time"),
                 },
             )
-            logger.info("%s: contract %s settled, profit=%.2f, balance=%.2f", symbol, contract_id, profit, self.risk.state.balance)
+            logger.info(
+                "%s: contract %s settled, profit=%.2f, balance=%.2f",
+                symbol, contract_id, profit, self.risk.state.balance,
+            )
+            self.pnl.record(
+                symbol=symbol,
+                contract_id=contract_id,
+                stake=attempt.stake or 0.0,
+                payout=attempt.payout or 0.0,
+                profit=profit,
+                balance_after=self.risk.state.balance,
+            )
+            logger.info("P&L\n%s", self.pnl.render())
         return handler
 
     async def _log_evaluation(self, symbol: str, result: EnsembleResult) -> None:
