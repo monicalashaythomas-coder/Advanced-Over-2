@@ -343,9 +343,9 @@ class DigitOverBot:
         )
 
     async def run_forever(self) -> None:
-        await self.start()
-        self._markov_save_task = asyncio.create_task(self._markov_save_loop())
         try:
+            await self.start()
+            self._markov_save_task = asyncio.create_task(self._markov_save_loop())
             while True:
                 await asyncio.sleep(3600)
         finally:
