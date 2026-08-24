@@ -89,6 +89,7 @@ class DerivClient:
         self._contract_handlers: dict[int, ContractHandler] = {}
         self.initial_balance: float = 0.0
         self._closing = False
+        self._reconnecting = False
 
     # ---- REST: token -> personalized, pre-authenticated WS URL ----
 
@@ -213,12 +214,60 @@ class DerivClient:
         except asyncio.CancelledError:
             pass
         except (ConnectionClosed, ConnectionClosedError, ConnectionClosedOK):
-            if not self._closing:
-                logger.warning("Deriv websocket closed unexpectedly; caller's reconnect loop should handle this")
             self._fail_pending("connection closed")
+            if not self._closing:
+                logger.warning("Deriv websocket closed unexpectedly; reconnecting")
+                asyncio.create_task(self._reconnect(), name="deriv_reconnect")
         except Exception as exc:
             logger.error("recv pump error: %s", exc)
             self._fail_pending(str(exc))
+            if not self._closing:
+                asyncio.create_task(self._reconnect(), name="deriv_reconnect")
+
+    async def _reconnect(self) -> None:
+        """Re-establish the websocket after an unexpected close and
+        resubscribe everything the caller had registered -- tick streams
+        and open-contract watches -- so the bot doesn't go silently dead
+        after a routine keepalive/ping-timeout disconnect."""
+        if self._reconnecting or self._closing:
+            return
+        self._reconnecting = True
+        try:
+            if self._send_task and not self._send_task.done():
+                self._send_task.cancel()
+            symbols = list(self._tick_handlers.keys())
+            contract_ids = list(self._contract_handlers.keys())
+            delay = 2.0
+            for attempt in range(1, 6):
+                if self._closing:
+                    return
+                await asyncio.sleep(delay)
+                try:
+                    logger.info("reconnect attempt %d/5", attempt)
+                    await self.connect()
+                    for symbol in symbols:
+                        resp = await self._send_with_id({"ticks": symbol, "subscribe": 1})
+                        if resp is None or resp.get("error"):
+                            raise DerivApiError(f"resubscribe ticks({symbol}) failed: {(resp or {}).get('error')}")
+                    for contract_id in contract_ids:
+                        resp = await self._send_with_id(
+                            {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
+                        )
+                        if resp is None or resp.get("error"):
+                            raise DerivApiError(
+                                f"resubscribe contract({contract_id}) failed: {(resp or {}).get('error')}"
+                            )
+                    logger.info(
+                        "reconnected -- resubscribed to %d symbol(s), %d contract(s)",
+                        len(symbols), len(contract_ids),
+                    )
+                    return
+                except Exception as exc:
+                    logger.warning("reconnect attempt %d/5 failed: %s", attempt, exc)
+                    delay = min(delay * 2, 30)
+            logger.error("reconnect exhausted 5 attempts; websocket will stay down until process restart")
+        finally:
+            self._reconnecting = False
 
     def _fail_pending(self, reason: str) -> None:
         for fut in self._pending.values():
@@ -268,7 +317,13 @@ class DerivClient:
         rid = self._next_req_id()
         fut = loop.create_future()
         self._pending[rid] = fut
-        await self._send({**data, "req_id": rid})
+        try:
+            await self._send({**data, "req_id": rid})
+        except Exception:
+            self._pending.pop(rid, None)
+            if not fut.done():
+                fut.cancel()
+            raise
         try:
             return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
         except asyncio.TimeoutError:
