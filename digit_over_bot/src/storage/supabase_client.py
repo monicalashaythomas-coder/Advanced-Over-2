@@ -62,6 +62,7 @@ class SupabaseStore:
             return []
 
     async def upsert(self, table: str, row: dict[str, Any], on_conflict: str) -> None:
+        logger.info("upsert() called for %s (enabled=%s)", table, self.enabled)
         if not self.enabled:
             return
         try:
@@ -71,6 +72,8 @@ class SupabaseStore:
             resp = await client.post(f"{self._base}/{table}", headers=headers, params=params, json=row)
             if resp.status_code >= 300:
                 logger.warning("Supabase upsert into %s failed: %s %s", table, resp.status_code, resp.text)
+            else:
+                logger.info("Supabase upsert into %s succeeded: %s", table, resp.status_code)
         except Exception:
             logger.exception("Supabase upsert into %s raised", table)
 
