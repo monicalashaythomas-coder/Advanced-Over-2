@@ -95,12 +95,25 @@ class DigitOverBot:
             self.risk.state.balance = self.client.initial_balance
             self.pnl.starting_balance = self.client.initial_balance
         for symbol in self.settings.trading.symbols:
-            had_persisted_state = await self._load_markov_state(symbol)
-            if not had_persisted_state:
-                await self._seed_markov_state(symbol)
-        for symbol in self.settings.trading.symbols:
             await self.client.subscribe_ticks(symbol, self._tick_handler(symbol))
         logger.info("subscribed to: %s", ", ".join(self.settings.trading.symbols))
+        # Markov load/seed runs AFTER live subscriptions are up, as a
+        # background task -- a slow ticks_history() pull (or Deriv throttling
+        # a burst of them right after auth) must never delay, or crash, the
+        # tick subscriptions that actually make the bot trade. Each symbol
+        # is also individually try/excepted so one bad pull can't take out
+        # the others.
+        asyncio.create_task(self._load_or_seed_all_markov_state(), name="markov_load_seed")
+
+    async def _load_or_seed_all_markov_state(self) -> None:
+        for symbol in self.settings.trading.symbols:
+            try:
+                had_persisted_state = await self._load_markov_state(symbol)
+                if not had_persisted_state:
+                    await self._seed_markov_state(symbol)
+            except Exception:
+                logger.exception("%s: markov load/seed failed, continuing without it", symbol)
+            await asyncio.sleep(1.0)  # stagger -- avoid bursting a freshly-authenticated connection
 
     async def _load_markov_state(self, symbol: str) -> bool:
         """Restore cumulative markov_order_2/3 counts from Supabase so they
