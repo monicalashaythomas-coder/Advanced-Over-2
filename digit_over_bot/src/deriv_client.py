@@ -135,7 +135,27 @@ class DerivClient:
 
     # ---- connection lifecycle ----
 
+    async def _teardown_transport(self) -> None:
+        """Cancel any live pump tasks and close any live socket before a
+        (re)connect. Without this, a reconnect retry that opens a new
+        websocket but then fails at resubscribe leaves the previous
+        socket's recv loop running forever against a stale connection --
+        `async for raw in self._ws` captures that socket once and keeps
+        reading it even after self._ws is reassigned, so failed retries
+        silently accumulate extra live sessions on the account."""
+        for task in (self._send_task, self._recv_task):
+            if task and not task.done():
+                task.cancel()
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+        self._ws = None
+
     async def connect(self) -> None:
+        await self._teardown_transport()
+
         loop = asyncio.get_event_loop()
         self.ws_url = await loop.run_in_executor(None, self._fetch_ws_url)
 
@@ -171,14 +191,7 @@ class DerivClient:
 
     async def close(self) -> None:
         self._closing = True
-        for task in (self._send_task, self._recv_task):
-            if task and not task.done():
-                task.cancel()
-        if self._ws is not None:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
+        await self._teardown_transport()
         self._fail_pending("connection closed")
 
     # ---- I/O pumps ----
@@ -233,8 +246,6 @@ class DerivClient:
             return
         self._reconnecting = True
         try:
-            if self._send_task and not self._send_task.done():
-                self._send_task.cancel()
             symbols = list(self._tick_handlers.keys())
             contract_ids = list(self._contract_handlers.keys())
             delay = 2.0
