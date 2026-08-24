@@ -8,6 +8,7 @@ from typing import Any
 from src.config import Settings
 from src.deriv_client import DerivClient
 from src.digit_buffer import RollingDigitBuffer
+from src.duration_selector import select_duration
 from src.ensemble import Ensemble, EnsembleResult, describe
 from src.executor import Executor, TradeAttempt
 from src.learner import Learner
@@ -88,28 +89,52 @@ class DigitOverBot:
         self._markov_save_task: asyncio.Task | None = None
 
     async def start(self) -> None:
-        for symbol in self.settings.trading.symbols:
-            await self._load_markov_state(symbol)
         await self.client.connect()
         if self.client.initial_balance:
             self.risk.state.starting_balance = self.client.initial_balance
             self.risk.state.balance = self.client.initial_balance
             self.pnl.starting_balance = self.client.initial_balance
         for symbol in self.settings.trading.symbols:
+            had_persisted_state = await self._load_markov_state(symbol)
+            if not had_persisted_state:
+                await self._seed_markov_state(symbol)
+        for symbol in self.settings.trading.symbols:
             await self.client.subscribe_ticks(symbol, self._tick_handler(symbol))
         logger.info("subscribed to: %s", ", ".join(self.settings.trading.symbols))
 
-    async def _load_markov_state(self, symbol: str) -> None:
+    async def _load_markov_state(self, symbol: str) -> bool:
         """Restore cumulative markov_order_2/3 counts from Supabase so they
         don't start from zero on every restart -- without this, those orders
-        can take tens of thousands of ticks per symbol to warm back up."""
+        can take tens of thousands of ticks per symbol to warm back up.
+        Returns True if any persisted state was found and restored."""
         rows = await self.store.select("digit_markov_state", {"symbol": symbol})
         if not rows:
             logger.info("%s: no persisted markov state found (fresh start for this symbol)", symbol)
-            return
+            return False
         state = {row["order_"]: row["counts"] for row in rows}
         self.markov_layers[symbol].import_state(state)
         logger.info("%s: restored markov state for orders %s", symbol, sorted(state.keys()))
+        return True
+
+    async def _seed_markov_state(self, symbol: str, history_count: int = 5000) -> None:
+        """One-time cold-start seed: replay recent tick history through the
+        same observe()/push() path live ticks use, so markov_order_1/2 (and
+        to a lesser extent order_3) don't have to wait through minutes-to-
+        hours of live ticks before becoming available. Only runs when
+        Supabase had no persisted state at all for this symbol -- a restart
+        with real persisted history is never overwritten by a replay."""
+        try:
+            prices = await self.client.ticks_history(symbol, count=history_count)
+        except Exception:
+            logger.exception("%s: markov seed failed, continuing without it", symbol)
+            return
+        markov = self.markov_layers[symbol]
+        buffer = self.buffers[symbol]
+        for price in prices:
+            digit = last_digit(price)
+            markov.observe(buffer.window(), digit)
+            buffer.push(digit)
+        logger.info("%s: seeded markov state from %d historical ticks", symbol, len(prices))
 
     async def _save_markov_state(self, symbol: str) -> None:
         state = self.markov_layers[symbol].export_state()
@@ -202,7 +227,25 @@ class DigitOverBot:
             logger.info("%s: signal fired but risk manager blocked it: %s", symbol, why_not)
             return
 
-        attempt = await self.executor.try_execute(result)
+        t = self.settings.trading
+        duration_choice = select_duration(
+            buffer.window(),
+            t.duration_candidates,
+            barrier,
+            n_samples=t.duration_mc_samples,
+            block_size=t.duration_mc_block_size,
+        )
+        chosen_duration = duration_choice.duration_ticks if duration_choice is not None else None
+        if duration_choice is not None:
+            logger.info(
+                "%s: MC duration select -> %dt (p_win=%.3f) candidates=%s",
+                symbol, duration_choice.duration_ticks, duration_choice.win_prob,
+                {k: round(v, 3) for k, v in duration_choice.per_candidate.items()},
+            )
+        else:
+            logger.info("%s: MC duration select -> window too short, falling back to DURATION_TICKS", symbol)
+
+        attempt = await self.executor.try_execute(result, duration_ticks=chosen_duration)
         if not attempt.executed:
             logger.info("%s: signal fired but did not execute: %s", symbol, attempt.reason)
             return
@@ -222,6 +265,7 @@ class DigitOverBot:
                 "votes_available": result.votes_available,
                 "reasons": "; ".join(result.reasons),
                 "opened_epoch": tick.get("epoch"),
+                "duration_ticks": attempt.duration_ticks,
             },
         )
         await self.client.subscribe_contract(attempt.contract_id, self._settlement_handler(symbol, attempt))

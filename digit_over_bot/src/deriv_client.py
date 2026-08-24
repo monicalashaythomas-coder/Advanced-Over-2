@@ -351,6 +351,25 @@ class DerivClient:
         if resp is None or resp.get("error"):
             raise DerivApiError(f"subscribe_ticks({symbol}) failed: {(resp or {}).get('error')}")
 
+    async def ticks_history(self, symbol: str, count: int = 5000) -> list[float]:
+        """Pull recent tick history for cold-start seeding of the cumulative
+        Markov tables -- returns quotes in chronological order, ready to be
+        replayed through the same last_digit()/observe() path live ticks use.
+        """
+        resp = await self._send_with_id(
+            {
+                "ticks_history": symbol,
+                "adjust_start_time": 1,
+                "count": count,
+                "end": "latest",
+                "style": "ticks",
+            },
+            timeout=20.0,
+        )
+        if resp is None or resp.get("error"):
+            raise DerivApiError(f"ticks_history({symbol}) failed: {(resp or {}).get('error')}")
+        return [float(p) for p in resp["history"]["prices"]]
+
     async def proposal(
         self, symbol: str, contract_type: str, barrier: int, amount: float, currency: str, duration_ticks: int
     ) -> dict[str, Any]:

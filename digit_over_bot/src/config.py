@@ -27,6 +27,11 @@ def _env_int(name: str, default: int) -> int:
     return int(os.getenv(name, str(default)))
 
 
+def _env_int_list(name: str, default: str) -> list[int]:
+    raw = os.getenv(name, default)
+    return [int(s.strip()) for s in raw.split(",") if s.strip()]
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -60,6 +65,14 @@ class TradingConfig:
     currency: str = field(default_factory=lambda: os.getenv("CURRENCY", "USD"))
     duration_ticks: int = field(default_factory=lambda: _env_int("DURATION_TICKS", 1))
     max_price_slippage_pct: float = field(default_factory=lambda: _env_float("MAX_PRICE_SLIPPAGE_PCT", 5.0))
+
+    # Monte-Carlo-guided duration selection (replaces the fixed duration_ticks
+    # above for live trade firing -- duration_ticks stays as the fallback used
+    # only when the digit window is too short to bootstrap yet). See
+    # src/duration_selector.py.
+    duration_candidates: list[int] = field(default_factory=lambda: _env_int_list("DURATION_CANDIDATES", "1,3,5"))
+    duration_mc_samples: int = field(default_factory=lambda: _env_int("DURATION_MC_SAMPLES", 500))
+    duration_mc_block_size: int = field(default_factory=lambda: _env_int("DURATION_MC_BLOCK_SIZE", 10))
 
     # Rolling window sizes used by the structure-detection layer.
     window_sizes: list[int] = field(default_factory=lambda: [100, 250, 500, 1000])
