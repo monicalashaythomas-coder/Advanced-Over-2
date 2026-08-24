@@ -105,6 +105,7 @@ class DigitOverBot:
         can take tens of thousands of ticks per symbol to warm back up."""
         rows = await self.store.select("digit_markov_state", {"symbol": symbol})
         if not rows:
+            logger.info("%s: no persisted markov state found (fresh start for this symbol)", symbol)
             return
         state = {row["order_"]: row["counts"] for row in rows}
         self.markov_layers[symbol].import_state(state)
@@ -112,6 +113,7 @@ class DigitOverBot:
 
     async def _save_markov_state(self, symbol: str) -> None:
         state = self.markov_layers[symbol].export_state()
+        saved_orders = []
         for order, counts in state.items():
             if not counts:
                 continue
@@ -120,6 +122,11 @@ class DigitOverBot:
                 {"symbol": symbol, "order_": order, "counts": counts},
                 on_conflict="symbol,order_",
             )
+            saved_orders.append(order)
+        logger.info(
+            "%s: markov save cycle -- wrote orders %s, skipped empty %s",
+            symbol, saved_orders, sorted(set(state.keys()) - set(saved_orders)),
+        )
 
     async def _markov_save_loop(self) -> None:
         while True:
