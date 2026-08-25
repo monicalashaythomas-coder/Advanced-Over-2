@@ -92,8 +92,16 @@ class Executor:
                 duration_ticks=duration,
             )
 
+        # Deriv rejects buy prices with more than 2 decimal places
+        # (error code InvalidPrice). ask_price is always a clean 2-decimal
+        # money value, but multiplying by a slippage percentage routinely
+        # produces 3-4 decimal places (e.g. stake=2.50 * 1.05 = 2.625) --
+        # round the final price back down to cents before sending it, or
+        # every buy past a non-"nice" stake (any martingale step beyond the
+        # base stake, in particular) fails outright.
+        buy_price = round(ask_price * (1 + self.max_price_slippage_pct / 100), 2)
         try:
-            buy_resp = await self.client.buy(proposal_id, price=ask_price * (1 + self.max_price_slippage_pct / 100))
+            buy_resp = await self.client.buy(proposal_id, price=buy_price)
         except Exception as exc:  # noqa: BLE001
             logger.warning("%s: buy failed: %s", result.symbol, exc)
             return TradeAttempt(executed=False, reason=f"buy failed: {exc}", duration_ticks=duration)
