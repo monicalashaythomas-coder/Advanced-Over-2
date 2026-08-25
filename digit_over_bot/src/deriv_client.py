@@ -91,6 +91,11 @@ class DerivClient:
         self._closing = False
         self._reconnecting = False
 
+        # Per-symbol tick queues + worker tasks -- see _dispatch()/_tick_worker()
+        # for why ticks must never be awaited directly from the recv pump.
+        self._tick_queues: dict[str, asyncio.Queue] = {}
+        self._tick_workers: dict[str, asyncio.Task] = {}
+
     # ---- REST: token -> personalized, pre-authenticated WS URL ----
 
     def _rest_request(self, path: str, method: str = "GET") -> dict:
@@ -193,6 +198,8 @@ class DerivClient:
         self._closing = True
         await self._teardown_transport()
         self._fail_pending("connection closed")
+        for task in self._tick_workers.values():
+            task.cancel()
 
     # ---- I/O pumps ----
     # Writes go through a single queue/task so concurrent callers (e.g. a
@@ -296,17 +303,61 @@ class DerivClient:
 
         msg_type = msg.get("msg_type")
         if msg_type == "tick":
+            # IMPORTANT: never `await handler(tick)` here. _recv_pump calls
+            # _dispatch() in a tight loop that is the ONLY thing capable of
+            # reading proposal/buy responses off the socket (see
+            # _send_with_id). If a tick handler is awaited inline and it
+            # turns around and calls proposal()/buy() (which it does, on
+            # every trade signal), the handler blocks waiting for a response
+            # that only this same loop can deliver -- a self-deadlock that
+            # times every trade out after exactly the _send_with_id timeout,
+            # and starves the underlying websocket's ping/pong handling
+            # badly enough to trigger server-side keepalive-timeout closes.
+            # Handing the tick to a per-symbol queue/worker keeps this loop
+            # free to keep reading (and keeps per-symbol tick ordering
+            # intact, since each symbol's worker processes its queue
+            # strictly one tick at a time).
             tick = msg.get("tick", {})
-            handler = self._tick_handlers.get(tick.get("symbol"))
-            if handler:
-                await handler(tick)
+            symbol = tick.get("symbol")
+            queue = self._tick_queues.get(symbol)
+            if queue is not None:
+                queue.put_nowait(tick)
         elif msg_type == "proposal_open_contract":
             poc = msg.get("proposal_open_contract", {})
             handler = self._contract_handlers.get(poc.get("contract_id"))
             if handler:
-                await handler(poc)
+                asyncio.create_task(handler(poc), name=f"poc_handler_{poc.get('contract_id')}")
         elif msg.get("error"):
             logger.error("Deriv API error (unsolicited): %s", msg["error"])
+
+    def _ensure_tick_worker(self, symbol: str) -> None:
+        existing = self._tick_workers.get(symbol)
+        if existing is not None and not existing.done():
+            return
+        queue: asyncio.Queue = asyncio.Queue()
+        self._tick_queues[symbol] = queue
+        self._tick_workers[symbol] = asyncio.create_task(
+            self._tick_worker(symbol, queue), name=f"tick_worker_{symbol}"
+        )
+
+    async def _tick_worker(self, symbol: str, queue: asyncio.Queue) -> None:
+        """Processes one symbol's ticks strictly in arrival order, off the
+        recv pump. A slow tick (e.g. one that fires a trade and waits on
+        proposal()/buy()) only blocks this symbol's own queue -- it never
+        blocks _recv_pump, other symbols, or that same proposal's response
+        from arriving."""
+        while True:
+            tick = await queue.get()
+            try:
+                handler = self._tick_handlers.get(symbol)
+                if handler:
+                    await handler(tick)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("%s: tick worker handler error", symbol)
+            finally:
+                queue.task_done()
 
     # ---- request/response plumbing ----
 
@@ -347,6 +398,7 @@ class DerivClient:
 
     async def subscribe_ticks(self, symbol: str, handler: TickHandler) -> None:
         self._tick_handlers[symbol] = handler
+        self._ensure_tick_worker(symbol)
         resp = await self._send_with_id({"ticks": symbol, "subscribe": 1})
         if resp is None or resp.get("error"):
             raise DerivApiError(f"subscribe_ticks({symbol}) failed: {(resp or {}).get('error')}")
