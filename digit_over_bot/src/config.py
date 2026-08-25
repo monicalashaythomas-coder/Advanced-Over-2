@@ -58,7 +58,7 @@ class SupabaseConfig:
 @dataclass(frozen=True)
 class TradingConfig:
     symbols: list[str] = field(
-        default_factory=lambda: _env_list("SYMBOLS", "R_10,R_25,R_50,R_75,R_100")
+        default_factory=lambda: _env_list("SYMBOLS", "R_10,R_25,R_75,R_100,RDBEAR")
     )
     barrier: int = field(default_factory=lambda: _env_int("BARRIER", 2))  # "Digit Over 2"
     stake: float = field(default_factory=lambda: _env_float("STAKE", 1.0))
