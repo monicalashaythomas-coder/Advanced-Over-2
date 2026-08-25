@@ -99,6 +99,15 @@ class TradingConfig:
         default_factory=lambda: _env_float("CALIBRATION_PAUSE_THRESHOLD", 0.08)
     )
 
+    # Martingale staking (off by default -- see src/martingale.py). Same
+    # shape as the expiryrange-quiet-bot's: a per-symbol step counter that
+    # multiplies STAKE by martingale_factor**step after each loss, resets
+    # to step 0 on a win or once martingale_max_steps is reached, and is
+    # driven purely by the step counter (never by account balance).
+    martingale_enabled: bool = field(default_factory=lambda: _env_bool("MARTINGALE_ENABLED", False))
+    martingale_factor: float = field(default_factory=lambda: _env_float("MARTINGALE_FACTOR", 2.5))
+    martingale_max_steps: int = field(default_factory=lambda: _env_int("MARTINGALE_MAX_STEPS", 3))
+
 
 @dataclass(frozen=True)
 class Settings:

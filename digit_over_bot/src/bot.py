@@ -12,6 +12,7 @@ from src.duration_selector import select_duration
 from src.ensemble import Ensemble, EnsembleResult, describe
 from src.executor import Executor, TradeAttempt
 from src.learner import Learner
+from src.martingale import MartingaleStaking
 from src.pnl_ledger import PnLLedger
 from src.risk import RiskManager
 from src.stats.markov import MarkovLayer
@@ -55,6 +56,12 @@ class DigitOverBot:
             currency=t.currency,
             duration_ticks=t.duration_ticks,
             max_price_slippage_pct=t.max_price_slippage_pct,
+        )
+        self.martingale = MartingaleStaking(
+            base_stake=t.stake,
+            factor=t.martingale_factor,
+            max_steps=t.martingale_max_steps,
+            enabled=t.martingale_enabled,
         )
         self.ensemble = Ensemble(
             barrier=t.barrier,
@@ -258,10 +265,17 @@ class DigitOverBot:
         else:
             logger.info("%s: MC duration select -> window too short, falling back to DURATION_TICKS", symbol)
 
-        attempt = await self.executor.try_execute(result, duration_ticks=chosen_duration)
+        attempt = await self.executor.try_execute(
+            result, duration_ticks=chosen_duration, stake=self.martingale.stake_for(symbol)
+        )
         if not attempt.executed:
             logger.info("%s: signal fired but did not execute: %s", symbol, attempt.reason)
             return
+
+        if self.martingale.enabled and self.martingale.step_for(symbol) > 0:
+            logger.info(
+                "%s: martingale step=%d stake=%.2f", symbol, self.martingale.step_for(symbol), attempt.stake or 0.0
+            )
 
         self.risk.record_open(symbol)
         await self.store.insert(
@@ -291,6 +305,7 @@ class DigitOverBot:
                 return
             profit = float(poc.get("profit", 0.0))
             self.risk.record_settlement(symbol, profit)
+            self.martingale.record_result(symbol, win=profit > 0)
             self.client.unsubscribe_contract(contract_id)
             await self.store.update(
                 "digit_trades",

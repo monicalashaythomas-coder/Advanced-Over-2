@@ -50,11 +50,14 @@ class Executor:
         self.max_price_slippage_pct = max_price_slippage_pct
         self.min_ev_margin = min_ev_margin
 
-    async def try_execute(self, result: EnsembleResult, duration_ticks: int | None = None) -> TradeAttempt:
+    async def try_execute(
+        self, result: EnsembleResult, duration_ticks: int | None = None, stake: float | None = None
+    ) -> TradeAttempt:
         if result.combined_edge is None or result.combined_se is None:
             return TradeAttempt(executed=False, reason="no combined estimate")
 
         duration = duration_ticks if duration_ticks is not None else self.duration_ticks
+        trade_stake = stake if stake is not None else self.stake
         conservative_p = max(result.p_fair, result.p_fair + result.combined_edge - result.combined_se)
 
         try:
@@ -62,7 +65,7 @@ class Executor:
                 symbol=result.symbol,
                 contract_type="DIGITOVER",
                 barrier=result.barrier,
-                amount=self.stake,
+                amount=trade_stake,
                 currency=self.currency,
                 duration_ticks=duration,
             )
