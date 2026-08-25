@@ -403,24 +403,37 @@ class DerivClient:
         if resp is None or resp.get("error"):
             raise DerivApiError(f"subscribe_ticks({symbol}) failed: {(resp or {}).get('error')}")
 
-    async def ticks_history(self, symbol: str, count: int = 5000) -> list[float]:
-        """Pull recent tick history for cold-start seeding of the cumulative
-        Markov tables -- returns quotes in chronological order, ready to be
-        replayed through the same last_digit()/observe() path live ticks use.
+    async def ticks_history(
+        self, symbol: str, count: int = 5000, end: int | str = "latest"
+    ) -> list[dict[str, float]]:
+        """Pull historical ticks for cold-start seeding of the cumulative
+        Markov tables. Returns a list of {"epoch": int, "quote": float} in
+        chronological order (oldest first), ready to be replayed through the
+        same last_digit()/observe() path live ticks use.
+
+        `end` lets a caller page backward across multiple calls -- pass the
+        epoch just before the oldest tick of a previous batch to fetch the
+        ticks that precede it. In practice Deriv has capped a single response
+        at 1000 ticks for these symbols even when `count` asks for more, so
+        chaining calls via `end` (see bot.py: _seed_markov_state) is the only
+        way to build up a larger seed than one call alone provides.
         """
         resp = await self._send_with_id(
             {
                 "ticks_history": symbol,
                 "adjust_start_time": 1,
                 "count": count,
-                "end": "latest",
+                "end": end,
                 "style": "ticks",
             },
             timeout=20.0,
         )
         if resp is None or resp.get("error"):
-            raise DerivApiError(f"ticks_history({symbol}) failed: {(resp or {}).get('error')}")
-        return [float(p) for p in resp["history"]["prices"]]
+            raise DerivApiError(f"ticks_history({symbol}, end={end}) failed: {(resp or {}).get('error')}")
+        hist = resp["history"]
+        prices = hist.get("prices") or []
+        times = hist.get("times") or []
+        return [{"epoch": int(e), "quote": float(p)} for e, p in zip(times, prices)]
 
     async def proposal(
         self, symbol: str, contract_type: str, barrier: int, amount: float, currency: str, duration_ticks: int

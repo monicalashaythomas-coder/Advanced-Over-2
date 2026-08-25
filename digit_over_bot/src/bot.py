@@ -136,25 +136,70 @@ class DigitOverBot:
         logger.info("%s: restored markov state for orders %s", symbol, sorted(state.keys()))
         return True
 
-    async def _seed_markov_state(self, symbol: str, history_count: int = 5000) -> None:
-        """One-time cold-start seed: replay recent tick history through the
-        same observe()/push() path live ticks use, so markov_order_1/2 (and
-        to a lesser extent order_3) don't have to wait through minutes-to-
-        hours of live ticks before becoming available. Only runs when
-        Supabase had no persisted state at all for this symbol -- a restart
-        with real persisted history is never overwritten by a replay."""
-        try:
-            prices = await self.client.ticks_history(symbol, count=history_count)
-        except Exception:
-            logger.exception("%s: markov seed failed, continuing without it", symbol)
+    async def _seed_markov_state(self, symbol: str) -> None:
+        """One-time cold-start seed: replay historical ticks through the same
+        observe()/push() path live ticks use, so markov_order_1/2/3 don't
+        have to wait through minutes-to-hours (order 3 especially) of live
+        ticks before becoming available. Only runs when Supabase had no
+        persisted state at all for this symbol -- a restart with real
+        persisted history is never overwritten by a replay.
+
+        Deriv has, in practice, capped a single ticks_history response at
+        `markov_seed_batch_size` ticks for these symbols even when a larger
+        `count` is requested -- confirmed empirically (a request for 5000
+        returned exactly 1000). To get a useful sample size for the higher
+        Markov orders (order 3 alone has 1000 conditioning states, needing
+        on the order of tens of thousands of ticks to reliably reach
+        MIN_MARKOV_STATE_COUNT per state), this pages backward: each
+        subsequent call's `end` is set to just before the oldest epoch
+        already collected. Stops on whichever comes first: the configured
+        target tick count, a short batch (a strong signal we've hit Deriv's
+        history retention boundary for this symbol -- not an error, just
+        means there's no more to fetch), or the batch cap (a hard ceiling on
+        API calls so this can't stall startup or trip Deriv's ticks_history
+        rate limit)."""
+        t = self.settings.trading
+        all_ticks: list[dict[str, float]] = []
+        end: int | str = "latest"
+        batches = 0
+        for batches in range(1, t.markov_seed_max_batches + 1):
+            try:
+                batch = await self.client.ticks_history(symbol, count=t.markov_seed_batch_size, end=end)
+            except Exception:
+                logger.exception(
+                    "%s: markov seed batch %d failed at end=%s, stopping with %d ticks collected so far",
+                    symbol, batches, end, len(all_ticks),
+                )
+                break
+            if not batch:
+                break
+            all_ticks = batch + all_ticks  # this batch is strictly older than everything collected so far
+            if len(all_ticks) >= t.markov_seed_target_ticks:
+                break
+            if len(batch) < t.markov_seed_batch_size:
+                logger.info(
+                    "%s: markov seed batch %d came back short (%d < %d) -- likely hit Deriv's history "
+                    "retention boundary for this symbol, stopping with %d ticks",
+                    symbol, batches, len(batch), t.markov_seed_batch_size, len(all_ticks),
+                )
+                break
+            end = batch[0]["epoch"] - 1
+            await asyncio.sleep(t.markov_seed_batch_delay_s)
+
+        if not all_ticks:
+            logger.warning("%s: markov seed collected no historical ticks", symbol)
             return
+
         markov = self.markov_layers[symbol]
         buffer = self.buffers[symbol]
-        for price in prices:
-            digit = last_digit(price)
+        for tick in all_ticks:  # already chronological, oldest first
+            digit = last_digit(tick["quote"])
             markov.observe(buffer.window(), digit)
             buffer.push(digit)
-        logger.info("%s: seeded markov state from %d historical ticks", symbol, len(prices))
+        logger.info(
+            "%s: seeded markov state from %d historical ticks across %d batch(es)",
+            symbol, len(all_ticks), batches,
+        )
 
     async def _save_markov_state(self, symbol: str) -> None:
         state = self.markov_layers[symbol].export_state()

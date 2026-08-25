@@ -79,6 +79,19 @@ class TradingConfig:
     buffer_size: int = field(default_factory=lambda: _env_int("BUFFER_SIZE", 1000))
     markov_orders: list[int] = field(default_factory=lambda: [1, 2, 3])
 
+    # Cold-start Markov seed. A single ticks_history call has, in practice,
+    # returned exactly `markov_seed_batch_size` ticks for these symbols
+    # regardless of the requested count -- these knobs chain multiple calls
+    # (paging backward via `end`) to build a larger seed than one call alone
+    # can provide, mainly so the higher Markov orders warm up faster. See
+    # src/bot.py: _seed_markov_state.
+    markov_seed_target_ticks: int = field(default_factory=lambda: _env_int("MARKOV_SEED_TARGET_TICKS", 20000))
+    markov_seed_batch_size: int = field(default_factory=lambda: _env_int("MARKOV_SEED_BATCH_SIZE", 1000))
+    markov_seed_max_batches: int = field(default_factory=lambda: _env_int("MARKOV_SEED_MAX_BATCHES", 25))
+    markov_seed_batch_delay_s: float = field(
+        default_factory=lambda: _env_float("MARKOV_SEED_BATCH_DELAY_S", 0.5)
+    )
+
     # Statistical gating. See src/ensemble.py for how these combine.
     alpha: float = field(default_factory=lambda: _env_float("ALPHA", 0.01))
     min_edge: float = field(default_factory=lambda: _env_float("MIN_EDGE", 0.03))
