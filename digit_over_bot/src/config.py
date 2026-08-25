@@ -71,7 +71,7 @@ class TradingConfig:
     # only when the digit window is too short to bootstrap yet). See
     # src/duration_selector.py.
     duration_candidates: list[int] = field(default_factory=lambda: _env_int_list("DURATION_CANDIDATES", "1,3,5"))
-    duration_mc_samples: int = field(default_factory=lambda: _env_int("DURATION_MC_SAMPLES", 500))
+    duration_mc_samples: int = field(default_factory=lambda: _env_int("DURATION_MC_SAMPLES", 1000))
     duration_mc_block_size: int = field(default_factory=lambda: _env_int("DURATION_MC_BLOCK_SIZE", 10))
 
     # Rolling window sizes used by the structure-detection layer.
@@ -117,9 +117,9 @@ class TradingConfig:
     # multiplies STAKE by martingale_factor**step after each loss, resets
     # to step 0 on a win or once martingale_max_steps is reached, and is
     # driven purely by the step counter (never by account balance).
-    martingale_enabled: bool = field(default_factory=lambda: _env_bool("MARTINGALE_ENABLED", False))
-    martingale_factor: float = field(default_factory=lambda: _env_float("MARTINGALE_FACTOR", 2.5))
-    martingale_max_steps: int = field(default_factory=lambda: _env_int("MARTINGALE_MAX_STEPS", 3))
+    martingale_enabled: bool = field(default_factory=lambda: _env_bool("MARTINGALE_ENABLED", True))
+    martingale_factor: float = field(default_factory=lambda: _env_float("MARTINGALE_FACTOR", 3.0))
+    martingale_max_steps: int = field(default_factory=lambda: _env_int("MARTINGALE_MAX_STEPS", 4))
 
 
 @dataclass(frozen=True)
