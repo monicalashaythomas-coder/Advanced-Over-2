@@ -26,6 +26,24 @@ async def main() -> None:
         logger.error("DERIV_APP_ID / DERIV_API_TOKEN are not set. Refusing to start.")
         sys.exit(1)
 
+    # Diagnostic only -- never logs the actual secret values, just whether
+    # each piece SupabaseStore.enabled depends on is actually present, and
+    # the same for martingale, since "enabled=False" alone (from
+    # supabase_client.py's upsert log line) doesn't say *which* of
+    # SUPABASE_URL / SUPABASE_SERVICE_KEY / SUPABASE_ENABLED is missing.
+    sb = SETTINGS.supabase
+    logger.info(
+        "config check -- SUPABASE_URL set=%s len=%d | SUPABASE_SERVICE_KEY set=%s len=%d | "
+        "SUPABASE_ENABLED=%s | resolved enabled=%s",
+        bool(sb.url), len(sb.url), bool(sb.service_key), len(sb.service_key),
+        sb.enabled, sb.enabled and bool(sb.url) and bool(sb.service_key),
+    )
+    t = SETTINGS.trading
+    logger.info(
+        "config check -- MARTINGALE_ENABLED=%s factor=%s max_steps=%s | MIN_MODELS_AGREEING=%d",
+        t.martingale_enabled, t.martingale_factor, t.martingale_max_steps, t.min_models_agreeing,
+    )
+
     while True:
         bot = DigitOverBot(SETTINGS)
         try:
