@@ -58,10 +58,10 @@ class SupabaseConfig:
 @dataclass(frozen=True)
 class TradingConfig:
     symbols: list[str] = field(
-        default_factory=lambda: _env_list("SYMBOLS", "R_10,R_25,R_75,R_100,")
+        default_factory=lambda: _env_list("SYMBOLS", "R_10,R_25,R_75,")
     )
-    barrier: int = field(default_factory=lambda: _env_int("BARRIER", 3))  # "Digit Over 2"
-    stake: float = field(default_factory=lambda: _env_float("STAKE", 1.0))
+    barrier: int = field(default_factory=lambda: _env_int("BARRIER", 2))  # "Digit Over 2"
+    stake: float = field(default_factory=lambda: _env_float("STAKE", 0.35))
     currency: str = field(default_factory=lambda: os.getenv("CURRENCY", "USD"))
     duration_ticks: int = field(default_factory=lambda: _env_int("DURATION_TICKS", 1))
     max_price_slippage_pct: float = field(default_factory=lambda: _env_float("MAX_PRICE_SLIPPAGE_PCT", 5.0))
@@ -96,7 +96,7 @@ class TradingConfig:
     alpha: float = field(default_factory=lambda: _env_float("ALPHA", 0.01))
     min_edge: float = field(default_factory=lambda: _env_float("MIN_EDGE", 0.03))
     min_edge_sigma_multiple: float = field(default_factory=lambda: _env_float("MIN_EDGE_SIGMA_MULTIPLE", 2.0))
-    min_models_agreeing: int = field(default_factory=lambda: _env_int("MIN_MODELS_AGREEING", 4))
+    min_models_agreeing: int = field(default_factory=lambda: _env_int("MIN_MODELS_AGREEING", 3))
     min_markov_state_count: int = field(default_factory=lambda: _env_int("MIN_MARKOV_STATE_COUNT", 30))
 
     # Risk / circuit breakers.
@@ -118,8 +118,8 @@ class TradingConfig:
     # to step 0 on a win or once martingale_max_steps is reached, and is
     # driven purely by the step counter (never by account balance).
     martingale_enabled: bool = field(default_factory=lambda: _env_bool("MARTINGALE_ENABLED", True))
-    martingale_factor: float = field(default_factory=lambda: _env_float("MARTINGALE_FACTOR", 3.0))
-    martingale_max_steps: int = field(default_factory=lambda: _env_int("MARTINGALE_MAX_STEPS", 4))
+    martingale_factor: float = field(default_factory=lambda: _env_float("MARTINGALE_FACTOR", 1.28))
+    martingale_max_steps: int = field(default_factory=lambda: _env_int("MARTINGALE_MAX_STEPS", 3))
 
 
 @dataclass(frozen=True)
